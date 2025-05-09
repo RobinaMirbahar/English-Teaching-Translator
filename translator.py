@@ -6,11 +6,11 @@ import os
 from io import BytesIO
 import base64
 from pydub import AudioSegment
-import time
 
 # Configure Streamlit page
 st.set_page_config(
     page_title="🎤 English Teaching Translator",
+    page_icon="🎤",
     layout="wide"
 )
 
@@ -37,60 +37,22 @@ with st.sidebar:
         index=5  # Default to Sindhi
     )
 
-# Audio recording component
-def audio_recorder_component():
-    """Custom audio recorder using browser's MediaRecorder API"""
-    recorder_js = """
-    <script>
-    async function recordAudio() {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mediaRecorder = new MediaRecorder(stream);
-        const audioChunks = [];
-        
-        mediaRecorder.addEventListener("dataavailable", event => {
-            audioChunks.push(event.data);
-        });
-        
-        // Start recording
-        mediaRecorder.start();
-        document.getElementById("status").textContent = "Recording...";
-        document.getElementById("stopBtn").disabled = false;
-        
-        // Return promise that resolves with audio blob
-        return new Promise(resolve => {
-            document.getElementById("stopBtn").onclick = () => {
-                mediaRecorder.stop();
-                stream.getTracks().forEach(track => track.stop());
-                document.getElementById("status").textContent = "Processing...";
-            };
-            
-            mediaRecorder.addEventListener("stop", () => {
-                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                const reader = new FileReader();
-                reader.readAsDataURL(audioBlob);
-                reader.onloadend = () => {
-                    const base64data = reader.result.split(',')[1];
-                    window.parent.postMessage({
-                        type: 'audioRecording',
-                        data: base64data
-                    }, '*');
-                };
-            });
-        });
-    }
-    </script>
-    <div>
-        <button onclick="recordAudio()" id="startBtn">🎤 Start Recording</button>
-        <button disabled id="stopBtn">⏹ Stop</button>
-        <span id="status">Ready to record</span>
-    </div>
-    """
-    st.components.v1.html(recorder_js, height=100)
+# Audio recorder component
+def audio_recorder():
+    st.markdown("### Record Your Voice")
+    audio_bytes = st.audio(
+        "Click to record",
+        format="audio/wav",
+        start_label="🎤 Start",
+        stop_label="⏹ Stop",
+        key="audio_recorder"
+    )
+    return audio_bytes
 
 # Main app interface
 st.title("🎤 English Teaching Translator")
 
-# Audio input options
+# Input method selection
 input_method = st.radio(
     "Choose input method:",
     ["Record Audio", "Upload Audio File"],
@@ -100,55 +62,27 @@ input_method = st.radio(
 audio_data = None
 
 if input_method == "Record Audio":
-    st.markdown("### 1. Record Your Voice")
-    audio_recorder_component()
-    
-    # Handle recorded audio from JavaScript
-    if 'audio_data' not in st.session_state:
-        st.session_state.audio_data = None
-    
-    # JavaScript to Python communication
-    js_code = """
-    <script>
-    window.addEventListener('message', (event) => {
-        if (event.data.type === 'audioRecording') {
-            window.parent.postMessage({
-                type: 'streamlit:setComponentValue',
-                value: event.data.data
-            }, '*');
-        }
-    });
-    </script>
-    """
-    result = st.components.v1.html(js_code, height=0)
-    
-    if result is not None:
-        st.session_state.audio_data = result
-        st.success("✅ Recording received!")
-
+    audio_data = audio_recorder()
 elif input_method == "Upload Audio File":
-    st.markdown("### 1. Upload Audio File")
+    st.markdown("### Upload Audio File")
     uploaded_file = st.file_uploader(
         "Choose an audio file (WAV or MP3)",
-        type=["wav", "mp3"]
+        type=["wav", "mp3"],
+        key="audio_uploader"
     )
     if uploaded_file:
         audio_data = uploaded_file.read()
 
 # Process audio when available
-if (st.session_state.get('audio_data') or audio_data) and api_key:
+if audio_data and api_key:
     try:
-        # Prepare audio file
+        # Save to temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            if audio_data:  # From file upload
+            if isinstance(audio_data, bytes):  # Uploaded file
                 tmp.write(audio_data)
-            else:  # From recording
-                audio_bytes = base64.b64decode(st.session_state.audio_data)
-                tmp.write(audio_bytes)
+            else:  # Recorded audio
+                tmp.write(audio_data.getvalue())
             temp_audio_path = tmp.name
-
-        # Display audio player
-        st.audio(temp_audio_path, format="audio/wav")
 
         # Configure Gemini
         genai.configure(api_key=api_key)
@@ -209,22 +143,21 @@ if (st.session_state.get('audio_data') or audio_data) and api_key:
     
         # Clean up
         os.unlink(temp_audio_path)
-        if 'audio_data' in st.session_state:
-            del st.session_state.audio_data
 
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
-elif (st.session_state.get('audio_data') or audio_data) and not api_key:
+elif audio_data and not api_key:
     st.warning("🔑 Please enter your Gemini API key in the sidebar")
 else:
     st.info("👆 Please record or upload audio to begin")
 
-# Requirements note
+# Requirements section
 st.markdown("---")
 st.markdown("""
 **Requirements:**
-```python
 google-generativeai>=0.3.0
 gtts>=2.3.1
 streamlit>=1.32.0
-pydub>=0.25.1  # For MP3 support
+pydub>=0.25.1
+
+""")
