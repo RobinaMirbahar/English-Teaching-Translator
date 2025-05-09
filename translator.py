@@ -1,32 +1,28 @@
 import streamlit as st
 import google.generativeai as genai
 from gtts import gTTS
-import speech_recognition as sr
 import tempfile
 import os
 from io import BytesIO
-import numpy as np
-import soundfile as sf
-
-# Initialize speech recognizer
-r = sr.Recognizer()
+import base64
+from pydub import AudioSegment
+import time
 
 # Configure Streamlit page
 st.set_page_config(
     page_title="🎤 English Teaching Translator",
-    page_icon="🎤",
     layout="wide"
 )
 
-# Language options with Sindhi and Urdu
+# Language options
 LANGUAGE_OPTIONS = {
-    "Spanish": "es-ES",
-    "French": "fr-FR",
-    "German": "de-DE",
-    "Chinese": "zh-CN",
-    "Japanese": "ja-JP",
-    "Sindhi": "sd-PK",
-    "Urdu": "ur-PK"
+    "Spanish": "es",
+    "French": "fr",
+    "German": "de",
+    "Chinese": "zh",
+    "Japanese": "ja",
+    "Sindhi": "sd",
+    "Urdu": "ur"
 }
 
 # Sidebar configuration
@@ -40,102 +36,148 @@ with st.sidebar:
         options=list(LANGUAGE_OPTIONS.keys()),
         index=5  # Default to Sindhi
     )
-    
-    st.markdown("---")
-    st.info("Record audio using the button below, then click 'Process Recording'")
+
+# Audio recording component
+def audio_recorder_component():
+    """Custom audio recorder using browser's MediaRecorder API"""
+    recorder_js = """
+    <script>
+    async function recordAudio() {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mediaRecorder = new MediaRecorder(stream);
+        const audioChunks = [];
+        
+        mediaRecorder.addEventListener("dataavailable", event => {
+            audioChunks.push(event.data);
+        });
+        
+        // Start recording
+        mediaRecorder.start();
+        document.getElementById("status").textContent = "Recording...";
+        document.getElementById("stopBtn").disabled = false;
+        
+        // Return promise that resolves with audio blob
+        return new Promise(resolve => {
+            document.getElementById("stopBtn").onclick = () => {
+                mediaRecorder.stop();
+                stream.getTracks().forEach(track => track.stop());
+                document.getElementById("status").textContent = "Processing...";
+            };
+            
+            mediaRecorder.addEventListener("stop", () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                const reader = new FileReader();
+                reader.readAsDataURL(audioBlob);
+                reader.onloadend = () => {
+                    const base64data = reader.result.split(',')[1];
+                    window.parent.postMessage({
+                        type: 'audioRecording',
+                        data: base64data
+                    }, '*');
+                };
+            });
+        });
+    }
+    </script>
+    <div>
+        <button onclick="recordAudio()" id="startBtn">🎤 Start Recording</button>
+        <button disabled id="stopBtn">⏹ Stop</button>
+        <span id="status">Ready to record</span>
+    </div>
+    """
+    st.components.v1.html(recorder_js, height=100)
 
 # Main app interface
 st.title("🎤 English Teaching Translator")
-st.markdown("### 1. Record Your Audio")
 
-# Initialize session state
-if 'recording' not in st.session_state:
-    st.session_state.recording = False
-if 'audio_available' not in st.session_state:
-    st.session_state.audio_available = False
-if 'audio_data' not in st.session_state:
-    st.session_state.audio_data = None
+# Audio input options
+input_method = st.radio(
+    "Choose input method:",
+    ["Record Audio", "Upload Audio File"],
+    horizontal=True
+)
 
-# Audio recording function
-def record_audio():
-    with sr.Microphone() as source:
-        st.info("Speak now...")
-        audio = r.listen(source)
-        st.session_state.audio_data = audio
-        st.session_state.audio_available = True
-        st.success("Recording complete!")
+audio_data = None
 
-# Recording control buttons
-col1, col2 = st.columns(2)
-with col1:
-    if st.button("🎤 Start Recording", disabled=st.session_state.recording):
-        st.session_state.recording = True
-        st.session_state.audio_available = False
-        record_audio()
-        st.session_state.recording = False
-        st.rerun()
+if input_method == "Record Audio":
+    st.markdown("### 1. Record Your Voice")
+    audio_recorder_component()
+    
+    # Handle recorded audio from JavaScript
+    if 'audio_data' not in st.session_state:
+        st.session_state.audio_data = None
+    
+    # JavaScript to Python communication
+    js_code = """
+    <script>
+    window.addEventListener('message', (event) => {
+        if (event.data.type === 'audioRecording') {
+            window.parent.postMessage({
+                type: 'streamlit:setComponentValue',
+                value: event.data.data
+            }, '*');
+        }
+    });
+    </script>
+    """
+    result = st.components.v1.html(js_code, height=0)
+    
+    if result is not None:
+        st.session_state.audio_data = result
+        st.success("✅ Recording received!")
 
-# Process recording button
-if st.session_state.audio_available and st.button("🔍 Process Recording"):
+elif input_method == "Upload Audio File":
+    st.markdown("### 1. Upload Audio File")
+    uploaded_file = st.file_uploader(
+        "Choose an audio file (WAV or MP3)",
+        type=["wav", "mp3"]
+    )
+    if uploaded_file:
+        audio_data = uploaded_file.read()
+
+# Process audio when available
+if (st.session_state.get('audio_data') or audio_data) and api_key:
     try:
-        # Save audio to temporary file
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            audio_data = st.session_state.audio_data
-            with open(tmp.name, "wb") as f:
-                f.write(audio_data.get_wav_data())
+        # Prepare audio file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            if audio_data:  # From file upload
+                tmp.write(audio_data)
+            else:  # From recording
+                audio_bytes = base64.b64decode(st.session_state.audio_data)
+                tmp.write(audio_bytes)
             temp_audio_path = tmp.name
 
-        # Process with Gemini 1.5
-        if api_key:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(
-                "gemini-1.5-pro-latest",
-                generation_config={
-                    "temperature": 0.7,
-                    "top_p": 1,
-                    "top_k": 32,
-                    "max_output_tokens": 4096,
-                }
+        # Display audio player
+        st.audio(temp_audio_path, format="audio/wav")
+
+        # Configure Gemini
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-pro-latest")
+
+        with st.spinner("🔍 Processing your audio..."):
+            # Process with Gemini's native audio understanding
+            response = model.generate_content(
+                [
+                    f"Provide a comprehensive English lesson for a {native_lang} speaker based on this audio. "
+                    f"Include: 1) Exact English translation, 2) Pronunciation guide, "
+                    f"3) Grammar analysis, 4) Practice sentences, 5) Common mistakes",
+                    genai.upload_file(temp_audio_path)
+                ]
             )
-
-            # Recognize speech
-            with st.spinner("Processing your audio..."):
-                with sr.AudioFile(temp_audio_path) as source:
-                    audio_data = r.record(source)
-                    native_text = r.recognize_google(
-                        audio_data,
-                        language=LANGUAGE_OPTIONS[native_lang]
-                    )
+            
+            lesson = response.text
+            
+            # Display results
+            st.success("✅ Analysis Complete!")
+            
+            # Extract and display translation
+            if "1)" in lesson:
+                translation = lesson.split("1)")[1].split("2)")[0].strip()
+                st.subheader("🔊 Translation")
+                st.write(translation)
                 
-                # Generate concise lesson
-                prompt = f"""
-                Provide a focused English lesson for a {native_lang} speaker who said:
-                "{native_text}"
-
-                Include ONLY:
-                1. Accurate English translation
-                2. Key pronunciation tips (3-4 points)
-                3. Main grammar points (2-3)
-                4. 2 practice sentences
-                
-                Keep responses brief and pedagogical.
-                """
-                
-                response = model.generate_content(prompt)
-                lesson = response.text
-                
-                # Display results
-                st.success("✅ Analysis Complete!")
-                st.subheader("🔊 What You Said")
-                st.write(native_text)
-                
-                st.subheader("📚 English Lesson")
-                st.write(lesson)
-                
-                # Generate audio translation
-                translation = lesson.split("1. ")[1].split("2. ")[0].replace("English translation:", "").strip()
-                
-                with st.spinner("Generating audio pronunciation..."):
+                # Generate audio pronunciation
+                with st.spinner("🔊 Generating audio pronunciation..."):
                     tts = gTTS(translation, lang='en', slow=True)
                     audio_bytes = BytesIO()
                     tts.write_to_fp(audio_bytes)
@@ -143,38 +185,46 @@ if st.session_state.audio_available and st.button("🔍 Process Recording"):
                     
                     st.subheader("🎧 Listen to Translation")
                     st.audio(audio_bytes, format="audio/mp3")
-        
+            
+            # Display full lesson
+            st.subheader("📚 English Lesson")
+            st.markdown(lesson)
+            
+            # Download options
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label="📥 Download Lesson",
+                    data=lesson,
+                    file_name="english_lesson.txt",
+                    mime="text/plain"
+                )
+            with col2:
+                st.download_button(
+                    label="🔊 Download Audio",
+                    data=audio_bytes.getvalue(),
+                    file_name="pronunciation.mp3",
+                    mime="audio/mp3"
+                )
+    
         # Clean up
         os.unlink(temp_audio_path)
-        st.session_state.audio_available = False
-        
-    except sr.UnknownValueError:
-        st.error("Could not understand audio. Please speak more clearly.")
-    except sr.RequestError as e:
-        st.error(f"Speech recognition service error: {e}")
-    except Exception as e:
-        st.error(f"An error occurred: {e}")
+        if 'audio_data' in st.session_state:
+            del st.session_state.audio_data
 
-# File upload fallback
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)}")
+elif (st.session_state.get('audio_data') or audio_data) and not api_key:
+    st.warning("🔑 Please enter your Gemini API key in the sidebar")
+else:
+    st.info("👆 Please record or upload audio to begin")
+
+# Requirements note
 st.markdown("---")
-st.markdown("### Alternatively, upload an audio file:")
-uploaded_file = st.file_uploader(
-    "Upload WAV audio file",
-    type=["wav"],
-    key="audio_uploader"
-)
-
-if uploaded_file:
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(uploaded_file.read())
-            temp_audio_path = tmp.name
-
-        st.audio(temp_audio_path, format="audio/wav")
-        
-        # Process with Gemini (same as above)
-        # ... [include the same processing code as above]
-        
-        os.unlink(temp_audio_path)
-    except Exception as e:
-        st.error(f"Error processing file: {str(e)}")
+st.markdown("""
+**Requirements:**
+```python
+google-generativeai>=0.3.0
+gtts>=2.3.1
+streamlit>=1.32.0
+pydub>=0.25.1  # For MP3 support
