@@ -6,48 +6,74 @@ import speech_recognition as sr
 from pydub import AudioSegment
 import tempfile
 
-# Streamlit UI Configuration
-st.set_page_config(page_title="🎤 English Teaching Translator", layout="wide")
-
-# Sidebar for API Key Input
-with st.sidebar:
-    st.title("🔑 API Configuration")
-    api_key = st.text_input("Enter your Gemini API Key:", type="password")
-    st.markdown("[Get your Gemini API key](https://aistudio.google.com/app/apikey)")
-    language_options = {
-        "Spanish": "es-ES",
-        "French": "fr-FR",
-        "German": "de-DE",
-        "Chinese": "zh-CN",
-        "Japanese": "ja-JP",
-        "Hindi": "hi-IN"
-    }
-    native_lang = st.selectbox("Your native language:", options=list(language_options.keys()))
-    st.markdown("---")
-    st.info("Allow microphone access when prompted by your browser")
-
-# Main App Interface
-st.title("🎤 English Teaching Translator")
-st.markdown("Speak in your native language and get an English lesson!")
-
-# Initialize session state
-if 'audio_processed' not in st.session_state:
-    st.session_state.audio_processed = False
-
-# Audio recording via Streamlit
-audio_bytes = st.audio(
-    "record",
-    format="audio/wav",
-    start_label="🎤 Record (5 seconds)",
-    stop_label="⏹ Stop",
-    sample_rate=16000,
-    key="audio_recorder"
+# Configure Streamlit
+st.set_page_config(
+    page_title="🎤 English Teaching Translator",
+    page_icon="🎤",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Process when API key is provided and audio is recorded
+# Initialize recognizer
+r = sr.Recognizer()
+
+# Language options with Sindhi and Urdu
+LANGUAGE_OPTIONS = {
+    "Spanish": "es-ES",
+    "French": "fr-FR",
+    "German": "de-DE",
+    "Chinese": "zh-CN",
+    "Japanese": "ja-JP",
+    "Sindhi": "sd-PK",
+    "Urdu": "ur-PK"
+}
+
+# Sidebar configuration
+with st.sidebar:
+    st.title("🔑 Configuration")
+    api_key = st.text_input("Enter your Gemini API Key:", type="password")
+    st.markdown("[Get your Gemini API key](https://aistudio.google.com/app/apikey)")
+    
+    native_lang = st.selectbox(
+        "Your native language:",
+        options=list(LANGUAGE_OPTIONS.keys()),
+        index=5  # Default to Sindhi
+    )
+    
+    st.markdown("---")
+    st.info("""
+        **Recording Instructions:**
+        1. Click the microphone button
+        2. Allow browser microphone access
+        3. Speak clearly for 5 seconds
+        4. Click stop when finished
+    """)
+
+# Main app interface
+st.title("🎤 English Teaching Translator")
+st.markdown("""
+    <style>
+    .big-font { font-size:18px !important; }
+    </style>
+    <p class="big-font">Speak in your native language and get a complete English lesson!</p>
+""", unsafe_allow_html=True)
+
+# Audio recording
+audio_bytes = None
+with st.expander("🎤 Record Audio (5 seconds)", expanded=True):
+    audio_bytes = st.audio(
+        "Click to record",
+        format="audio/wav",
+        start_label="🎤 Start Recording",
+        stop_label="⏹ Stop Recording",
+        sample_rate=16000,
+        key="audio_recorder"
+    )
+
+# Processing logic
 if api_key and audio_bytes:
     try:
-        # Configure Gemini with user-provided API key
+        # Configure Gemini
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(
             "gemini-1.5-pro-latest",
@@ -64,84 +90,97 @@ if api_key and audio_bytes:
             tmp.write(audio_bytes)
             audio_file = tmp.name
 
-        # Process audio and generate lesson
-        @st.cache_data(show_spinner="Processing your audio...")
-        def process_audio(audio_file, lang_code):
-            r = sr.Recognizer()
+        # Process audio
+        with st.spinner("🔄 Processing your audio..."):
             with sr.AudioFile(audio_file) as source:
-                audio = r.record(source)
-            native_text = r.recognize_google(audio, language=lang_code)
+                audio_data = r.record(source)
+                native_text = r.recognize_google(
+                    audio_data,
+                    language=LANGUAGE_OPTIONS[native_lang]
+                )
             
+            # Generate lesson
             prompt = f"""
-            As an expert English teacher, create a lesson for a {native_lang} speaker who said:
+            Create a comprehensive English lesson for a {native_lang} speaker who said:
             "{native_text}"
+
+            Include these sections with Markdown formatting:
             
-            Include:
-            1. Natural English translation
-            2. IPA pronunciation guide
-            3. Grammar breakdown
-            4. 3 practice sentences (beginner to advanced)
-            5. Common mistakes to avoid
-            6. Cultural notes if relevant
+            ### 1. English Translation
+            [Provide natural English equivalent]
             
-            Format with clear markdown formatting.
+            ### 2. Pronunciation Guide
+            - IPA transcription
+            - Syllable breakdown
+            - Stress patterns
+            
+            ### 3. Grammar Analysis
+            [Explain key grammatical structures]
+            
+            ### 4. Practice Exercises
+            - 3 simple sentences
+            - 2 complex sentences
+            - 1 dialogue example
+            
+            ### 5. Common Mistakes
+            [What learners typically get wrong]
+            
+            ### 6. Cultural Notes
+            [Relevant cultural context]
             """
             
             response = model.generate_content(prompt)
-            return native_text, response.text
-
-        native_text, lesson = process_audio(audio_file, language_options[native_lang])
-        
-        # Display results
-        st.subheader("🔊 What You Said")
-        st.write(f"*{native_text}*")
-        
-        st.subheader("📚 English Lesson")
-        st.markdown(lesson)
-        
-        # Generate and play audio translation
-        if "1. Natural English translation" in lesson:
-            translation = lesson.split("1. Natural English translation")[1].split("2. IPA pronunciation guide")[0].strip()
+            lesson = response.text
             
-            with st.spinner("Generating audio pronunciation..."):
-                tts = gTTS(translation, lang='en', slow=True)
-                tts.save("translation.mp3")
+            # Display results
+            st.success("✅ Analysis Complete!")
+            st.subheader("🔊 What You Said")
+            st.code(native_text, language="text")
+            
+            st.subheader("📚 English Lesson")
+            st.markdown(lesson)
+            
+            # Audio translation
+            if "### 1. English Translation" in lesson:
+                translation = lesson.split("### 1. English Translation")[1].split("### 2. Pronunciation Guide")[0].strip()
                 
-                # Auto-play audio
-                audio_file = open("translation.mp3", "rb")
-                audio_bytes = audio_file.read()
-                st.audio(audio_bytes, format="audio/mp3")
-                
-                # Download buttons
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.download_button(
-                        label="📥 Download Lesson",
-                        data=lesson,
-                        file_name="english_lesson.txt",
-                        mime="text/plain"
-                    )
-                with col2:
-                    with open("translation.mp3", "rb") as f:
+                with st.spinner("🔊 Generating audio pronunciation..."):
+                    tts = gTTS(translation, lang='en', slow=True)
+                    tts.save("translation.mp3")
+                    
+                    st.subheader("🎧 Listen to Translation")
+                    st.audio("translation.mp3", format="audio/mp3")
+                    
+                    # Download options
+                    col1, col2 = st.columns(2)
+                    with col1:
                         st.download_button(
-                            label="🔊 Download Audio",
-                            data=f,
-                            file_name="pronunciation.mp3",
-                            mime="audio/mp3"
+                            label="📥 Download Lesson (Text)",
+                            data=lesson,
+                            file_name="english_lesson.md",
+                            mime="text/markdown"
                         )
+                    with col2:
+                        with open("translation.mp3", "rb") as f:
+                            st.download_button(
+                                label="🔊 Download Audio",
+                                data=f,
+                                file_name="pronunciation.mp3",
+                                mime="audio/mp3"
+                            )
         
         # Clean up
         os.unlink(audio_file)
         if os.path.exists("translation.mp3"):
             os.unlink("translation.mp3")
-            
-        st.session_state.audio_processed = True
 
+    except sr.UnknownValueError:
+        st.error("🔇 Could not understand audio. Please speak more clearly.")
+    except sr.RequestError:
+        st.error("🌐 Speech service error. Please check your internet connection.")
     except Exception as e:
-        st.error(f"Error: {str(e)}")
-        st.info("Please try recording again or check your API key")
-
+        st.error(f"❌ Error: {str(e)}")
 elif api_key and not audio_bytes:
-    st.warning("Please record your voice to get started")
+    st.warning("🎤 Please record your voice to get started")
 elif not api_key:
-    st.warning("Please enter your Gemini API key in the sidebar")
+    st.warning("🔑 Please enter your Gemini API key in the sidebar")
