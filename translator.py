@@ -53,6 +53,17 @@ if 'recording' not in st.session_state:
     st.session_state.recording = False
 if 'audio_available' not in st.session_state:
     st.session_state.audio_available = False
+if 'audio_data' not in st.session_state:
+    st.session_state.audio_data = None
+
+# Audio recording function
+def record_audio():
+    with sr.Microphone() as source:
+        st.info("Speak now...")
+        audio = r.listen(source)
+        st.session_state.audio_data = audio
+        st.session_state.audio_available = True
+        st.success("Recording complete!")
 
 # Recording control buttons
 col1, col2 = st.columns(2)
@@ -60,31 +71,21 @@ with col1:
     if st.button("🎤 Start Recording", disabled=st.session_state.recording):
         st.session_state.recording = True
         st.session_state.audio_available = False
-        st.rerun()
-
-with col2:
-    if st.button("⏹ Stop Recording", disabled=not st.session_state.recording):
+        record_audio()
         st.session_state.recording = False
-        st.session_state.audio_available = True
         st.rerun()
-
-# Status indicators
-if st.session_state.recording:
-    st.warning("Recording... Speak now. Click 'Stop Recording' when done.")
-elif st.session_state.audio_available:
-    st.success("Recording complete! Click 'Process Recording' below")
 
 # Process recording button
 if st.session_state.audio_available and st.button("🔍 Process Recording"):
     try:
-        # For demo purposes - in production you'd use actual recorded audio
-        # Here we'll use a temporary WAV file as placeholder
+        # Save audio to temporary file
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            # Create silent audio as placeholder (replace with real recording)
-            sf.write(tmp.name, np.zeros(44100), 44100)
+            audio_data = st.session_state.audio_data
+            with open(tmp.name, "wb") as f:
+                f.write(audio_data.get_wav_data())
             temp_audio_path = tmp.name
 
-        # Process with Gemini 1.5 (most current version)
+        # Process with Gemini 1.5
         if api_key:
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel(
@@ -97,55 +98,44 @@ if st.session_state.audio_available and st.button("🔍 Process Recording"):
                 }
             )
 
-            # Simulate speech recognition (replace with real implementation)
-            native_text = "This is a sample text in your native language"
-            
-            # Generate lesson
-            prompt = f"""
-            Create a comprehensive English lesson for a {native_lang} speaker who said:
-            "{native_text}"
-
-            Include these sections with Markdown formatting:
-            
-            ### 1. English Translation
-            [Provide natural English equivalent]
-            
-            ### 2. Pronunciation Guide
-            - IPA transcription
-            - Syllable breakdown
-            - Stress patterns
-            
-            ### 3. Grammar Analysis
-            [Explain key grammatical structures]
-            
-            ### 4. Practice Exercises
-            - 3 simple sentences (beginner)
-            - 2 complex sentences (intermediate)
-            - 1 dialogue example (advanced)
-            
-            ### 5. Common Mistakes
-            [What learners typically get wrong]
-            
-            ### 6. Cultural Notes
-            [Relevant cultural context]
-            """
-            
-            response = model.generate_content(prompt)
-            lesson = response.text
-            
-            # Display results
-            st.success("✅ Analysis Complete!")
-            st.subheader("🔊 What You Said")
-            st.code(native_text, language="text")
-            
-            st.subheader("📚 English Lesson")
-            st.markdown(lesson)
-            
-            # Generate audio translation
-            if "### 1. English Translation" in lesson:
-                translation = "This is the English translation"  # Replace with actual translation
+            # Recognize speech
+            with st.spinner("Processing your audio..."):
+                with sr.AudioFile(temp_audio_path) as source:
+                    audio_data = r.record(source)
+                    native_text = r.recognize_google(
+                        audio_data,
+                        language=LANGUAGE_OPTIONS[native_lang]
+                    )
                 
-                with st.spinner("🔊 Generating audio pronunciation..."):
+                # Generate concise lesson
+                prompt = f"""
+                Provide a focused English lesson for a {native_lang} speaker who said:
+                "{native_text}"
+
+                Include ONLY:
+                1. Accurate English translation
+                2. Key pronunciation tips (3-4 points)
+                3. Main grammar points (2-3)
+                4. 2 practice sentences
+                
+                Keep responses brief and pedagogical.
+                """
+                
+                response = model.generate_content(prompt)
+                lesson = response.text
+                
+                # Display results
+                st.success("✅ Analysis Complete!")
+                st.subheader("🔊 What You Said")
+                st.write(native_text)
+                
+                st.subheader("📚 English Lesson")
+                st.write(lesson)
+                
+                # Generate audio translation
+                translation = lesson.split("1. ")[1].split("2. ")[0].replace("English translation:", "").strip()
+                
+                with st.spinner("Generating audio pronunciation..."):
                     tts = gTTS(translation, lang='en', slow=True)
                     audio_bytes = BytesIO()
                     tts.write_to_fp(audio_bytes)
@@ -153,30 +143,17 @@ if st.session_state.audio_available and st.button("🔍 Process Recording"):
                     
                     st.subheader("🎧 Listen to Translation")
                     st.audio(audio_bytes, format="audio/mp3")
-                    
-                    # Download options
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.download_button(
-                            label="📥 Download Lesson (Text)",
-                            data=lesson,
-                            file_name="english_lesson.md",
-                            mime="text/markdown"
-                        )
-                    with col2:
-                        st.download_button(
-                            label="🔊 Download Audio",
-                            data=audio_bytes,
-                            file_name="pronunciation.mp3",
-                            mime="audio/mp3"
-                        )
         
         # Clean up
         os.unlink(temp_audio_path)
         st.session_state.audio_available = False
         
+    except sr.UnknownValueError:
+        st.error("Could not understand audio. Please speak more clearly.")
+    except sr.RequestError as e:
+        st.error(f"Speech recognition service error: {e}")
     except Exception as e:
-        st.error(f"Error processing recording: {str(e)}")
+        st.error(f"An error occurred: {e}")
 
 # File upload fallback
 st.markdown("---")
