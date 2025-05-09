@@ -7,10 +7,20 @@ import os
 from io import BytesIO
 import numpy as np
 import soundfile as sf
-from pydub import AudioSegment
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration, AudioProcessorBase
+import av
 
 # Initialize speech recognizer
 r = sr.Recognizer()
+
+# Enhanced WebRTC Configuration
+RTC_CONFIGURATION = RTCConfiguration({
+    "iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]}
+    ]
+})
 
 # Configure Streamlit page
 st.set_page_config(
@@ -29,6 +39,14 @@ LANGUAGE_OPTIONS = {
     "Sindhi": "sd-PK",
     "Urdu": "ur-PK"
 }
+
+class AudioRecorder(AudioProcessorBase):
+    def __init__(self):
+        self.audio_frames = []
+    
+    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
+        self.audio_frames.append(frame.to_ndarray())
+        return frame
 
 # Sidebar configuration
 with st.sidebar:
@@ -61,43 +79,32 @@ uploaded_file = st.file_uploader(
 st.markdown("---")
 st.markdown("### Or record using your microphone:")
 
-try:
-    from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
-    import av
-    
-    class AudioRecorder(AudioProcessorBase):
-        def __init__(self):
-            self.audio_frames = []
-        
-        def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-            self.audio_frames.append(frame.to_ndarray())
-            return frame
-    
-    webrtc_ctx = webrtc_streamer(
-        key="mic_recorder",
-        mode=WebRtcMode.SENDONLY,
-        audio_processor_factory=AudioRecorder,
-        media_stream_constraints={"audio": True},
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-    )
-    
-    if webrtc_ctx and webrtc_ctx.audio_processor:
-        if st.button("Save Recording"):
-            audio_frames = webrtc_ctx.audio_processor.audio_frames
-            if audio_frames:
-                # Convert frames to WAV
-                audio_array = np.concatenate(audio_frames)
-                temp_audio_path = "recording.wav"
-                sf.write(temp_audio_path, audio_array, samplerate=44100)
-                uploaded_file = temp_audio_path
-                st.success("✅ Recording saved!")
+webrtc_ctx = webrtc_streamer(
+    key="mic_recorder",
+    mode=WebRtcMode.SENDONLY,
+    audio_processor_factory=AudioRecorder,
+    media_stream_constraints={
+        "audio": {
+            "sampleRate": 44100,
+            "channelCount": 1,
+            "echoCancellation": True,
+            "noiseSuppression": True
+        }
+    },
+    rtc_configuration=RTC_CONFIGURATION,
+    async_processing=True
+)
 
-except ImportError:
-    st.warning("""
-    **For microphone recording:**
-    - Install with: `pip install streamlit-webrtc`
-    - Requires HTTPS (works automatically in Codespaces)
-    """)
+if webrtc_ctx and webrtc_ctx.audio_processor:
+    if st.button("Save Recording"):
+        audio_frames = webrtc_ctx.audio_processor.audio_frames
+        if audio_frames:
+            # Convert frames to WAV
+            audio_array = np.concatenate(audio_frames)
+            temp_audio_path = "recording.wav"
+            sf.write(temp_audio_path, audio_array, 44100)
+            uploaded_file = temp_audio_path
+            st.success("✅ Recording saved!")
 
 # Process audio when provided
 if uploaded_file:
@@ -215,3 +222,13 @@ elif not api_key:
     st.warning("🔑 Please enter your Gemini API key in the sidebar")
 else:
     st.info("👆 Please upload an audio file or record using your microphone")
+
+# Connection troubleshooting
+if not webrtc_ctx or not webrtc_ctx.state.playing:
+    st.warning("""
+    **Microphone access issues detected:**
+    1. Make sure you're using Chrome/Firefox
+    2. Allow microphone permissions
+    3. Try refreshing the page
+    4. If problems persist, use file upload instead
+    """)
